@@ -7,9 +7,17 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.core import HomeAssistant
 
 from .api import KumoCloudAPI, KumoCloudAuthError, KumoCloudConnectionError
-from .const import DOMAIN, DEFAULT_SCAN_INTERVAL
+from .const import DOMAIN, DEFAULT_SCAN_INTERVAL, LOG_VERSION
 
-_LOGGER = logging.getLogger(__name__)
+
+class _VersionedLogger(logging.LoggerAdapter):
+    """Logger adapter that prepends the log version to every message."""
+
+    def process(self, msg, kwargs):
+        return f"[v{LOG_VERSION}] {msg}", kwargs
+
+
+_LOGGER = _VersionedLogger(logging.getLogger(__name__))
 
 class KumoCloudDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching Kumo Cloud data."""
@@ -33,9 +41,7 @@ class KumoCloudDataUpdateCoordinator(DataUpdateCoordinator):
 
     def _process_pending_commands(self, device_serial: str, device_detail: dict[str, Any]) -> None:
         """Process cached commands and cull outdated commands for a device."""
-        # Check if the device already exists and the updatedAt matches
-        if device_serial in self.devices and "updatedAt" in device_detail:
-            self.cull_cached_commands(device_serial, device_detail.get("updatedAt"))
+        self.cull_cached_commands(device_serial)
 
         # Reapply cached commands to the device details
         for (cached_device_serial, command), (_, command_value) in self.cached_commands.items():
@@ -70,6 +76,20 @@ class KumoCloudDataUpdateCoordinator(DataUpdateCoordinator):
                     devices[device_serial] = device_detail
                     device_profiles[device_serial] = device_profile
 
+                    _LOGGER.debug(
+                        "Device details fetched for %s: roomTemp=%s, spHeat=%s, spCool=%s, "
+                        "operationMode=%s, power=%s, fanSpeed=%s, airDirection=%s, humidity=%s",
+                        device_serial,
+                        device_detail.get("roomTemp"),
+                        device_detail.get("spHeat"),
+                        device_detail.get("spCool"),
+                        device_detail.get("operationMode"),
+                        device_detail.get("power"),
+                        device_detail.get("fanSpeed"),
+                        device_detail.get("airDirection"),
+                        device_detail.get("humidity"),
+                    )
+
             # Store the data for access by entities
             self.zones = zones
             self.devices = devices
@@ -102,8 +122,36 @@ class KumoCloudDataUpdateCoordinator(DataUpdateCoordinator):
             # Get fresh device details
             device_detail = await self.api.get_device_details(device_serial)
 
+            _LOGGER.debug(
+                "Raw cloud data for %s (before pending commands): roomTemp=%s, spHeat=%s, spCool=%s, "
+                "operationMode=%s, power=%s, fanSpeed=%s, airDirection=%s, humidity=%s",
+                device_serial,
+                device_detail.get("roomTemp"),
+                device_detail.get("spHeat"),
+                device_detail.get("spCool"),
+                device_detail.get("operationMode"),
+                device_detail.get("power"),
+                device_detail.get("fanSpeed"),
+                device_detail.get("airDirection"),
+                device_detail.get("humidity"),
+            )
+
             # Process pending commands for the device
             self._process_pending_commands(device_serial, device_detail)
+
+            _LOGGER.debug(
+                "Device details for %s (after pending commands): roomTemp=%s, spHeat=%s, spCool=%s, "
+                "operationMode=%s, power=%s, fanSpeed=%s, airDirection=%s, humidity=%s",
+                device_serial,
+                device_detail.get("roomTemp"),
+                device_detail.get("spHeat"),
+                device_detail.get("spCool"),
+                device_detail.get("operationMode"),
+                device_detail.get("power"),
+                device_detail.get("fanSpeed"),
+                device_detail.get("airDirection"),
+                device_detail.get("humidity"),
+            )
 
             # Update the cached device data
             self.devices[device_serial] = device_detail
@@ -143,47 +191,50 @@ class KumoCloudDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("Failed to refresh device %s: %s", device_serial, err)
 
     def cache_command(self, device_serial: str, command: str, value: Any) -> None:
-        """Cache a command with its value and timestamp."""
+        """Cache a command with its value and timestamp.
+
+        Cached commands are used for optimistic UI updates: after we send a
+        command the Kumo Cloud API may take an indeterminate amount of time to
+        reflect the new value in subsequent GET responses.  By storing the
+        sent value here and re-applying it over the polled data in
+        _process_pending_commands(), the UI immediately shows what the user
+        asked for rather than snapping back to the stale cloud value.  Entries
+        are evicted by cull_cached_commands() once they exceed the 60-second
+        TTL, by which point the cloud should have caught up.
+        """
         current_time = datetime.now(timezone.utc).isoformat()
         self.cached_commands[(device_serial, command)] = (current_time, value)
-        _LOGGER.debug("Cached command in device data: %s at %s", command, current_time)
+        _LOGGER.debug(
+            "Cached command for device %s: %s=%s (cached_at=%s)",
+            device_serial, command, value, current_time
+        )
 
-    def cull_cached_commands(self, device_serial: str, date: str) -> None:
-        """Remove cached commands for a device where the date is on or after the item's timestamp."""
+    def cull_cached_commands(self, device_serial: str) -> None:
+        """Remove cached commands for a device that have exceeded the 60-second TTL."""
         to_remove = []
-        input_date = datetime.fromisoformat(date)
+        now = datetime.now(timezone.utc)
 
         for key, value in self.cached_commands.items():
             cached_device_serial, command = key
             cached_date, _ = value
             cached_date_obj = datetime.fromisoformat(cached_date)
+            age = (now - cached_date_obj).total_seconds()
 
-            # Check if the device_serial matches and the input date is on or after the cached date
-            if cached_device_serial == device_serial and input_date >= cached_date_obj:
-                to_remove.append(key)
-            else:
-                # Log details if the condition fails
+            if cached_device_serial == device_serial and age >= 60:
                 _LOGGER.debug(
-                    "Skipping cached command: cached_device_serial=%s, device_serial=%s, "
-                    "input_date=%s, cached_date_obj=%s, date=%s, cached_date=%s",
-                    cached_device_serial,
-                    device_serial,
-                    input_date,
-                    cached_date_obj,
-                    date,
-                    cached_date,
+                    "Evicting cached command %s for device %s (TTL expired, age=%.1fs)",
+                    command, cached_device_serial, age,
                 )
+                to_remove.append(key)
 
-        # Remove the matching keys
         for key in to_remove:
             del self.cached_commands[key]
 
-        # Log the culled and remaining commands
-        remaining_count = len(self.cached_commands)
-        _LOGGER.debug(
-            "Culled %d cached commands for device %s on or after %s. Remaining cached commands: %d",
-            len(to_remove), device_serial, date, remaining_count
-        )
+        if to_remove:
+            _LOGGER.debug(
+                "Culled %d TTL-expired cached commands for device %s. Remaining: %d",
+                len(to_remove), device_serial, len(self.cached_commands)
+            )
 
 class KumoCloudDevice:
     """Representation of a Kumo Cloud device."""
@@ -201,6 +252,8 @@ class KumoCloudDevice:
         self._zone_data: dict[str, Any] | None = None
         self._device_data: dict[str, Any] | None = None
         self._profile_data: list[dict[str, Any]] | None = None
+        self._send_lock = asyncio.Lock()
+        self._pending_commands: dict[str, Any] | None = None
 
     @property
     def zone_data(self) -> dict[str, Any]:
@@ -246,22 +299,71 @@ class KumoCloudDevice:
         return f"{self.device_serial}_{self.zone_id}"
 
     async def send_command(self, commands: dict[str, Any]) -> None:
-        """Send a command to the device and refresh status."""
-        try:
-            response = await self.coordinator.api.send_command(self.device_serial, commands)
-            _LOGGER.debug("Sent command to device %s: %s, Response: %s", self.device_serial, commands, response)
+        """Send a command to the device.
 
-            # Wait a moment for the command to be processed
-            await asyncio.sleep(1)
+        Enforces two rate-limiting guarantees:
 
-            # Refresh this specific device's data immediately
-            await self.coordinator.async_refresh_device(self.device_serial)
+        1. **Serialization** — only one API call is in-flight at a time per
+           device.  If a second command arrives while one is already being sent,
+           it is held in a last-write-wins pending slot (_pending_commands) and
+           dispatched automatically once the in-flight call completes.
 
-        except Exception as err:
-            _LOGGER.error(
-                "Failed to send command to device %s: %s", self.device_serial, err
+        2. **Minimum inter-send gap** — after each send completes (including the
+           1-second settle sleep and a device refresh), a further delay is
+           inserted so that consecutive sends are always at least 5 seconds
+           apart.  This prevents the Kumo Cloud API from receiving rapid-fire
+           commands that it may silently drop or apply out of order.
+        """
+        if self._send_lock.locked():
+            if self._pending_commands is None:
+                self._pending_commands = {}
+            self._pending_commands.update(commands)
+            _LOGGER.debug(
+                "Command queued for device %s (in-flight): %s", self.device_serial, commands
             )
-            raise
+            return
+
+        async with self._send_lock:
+            to_send = commands
+            while True:
+                sent_at = asyncio.get_event_loop().time()
+                try:
+                    response = await self.coordinator.api.send_command(self.device_serial, to_send)
+                    _LOGGER.debug(
+                        "Sent command to device %s: %s, Response: %s",
+                        self.device_serial, to_send, response,
+                    )
+
+                    # Wait a moment for the command to be processed
+                    await asyncio.sleep(1)
+
+                    # Refresh this specific device's data immediately
+                    await self.coordinator.async_refresh_device(self.device_serial)
+
+                except Exception as err:
+                    _LOGGER.error(
+                        "Failed to send command to device %s: %s", self.device_serial, err
+                    )
+                    raise
+
+                to_send = self._pending_commands
+                self._pending_commands = None
+                if to_send is None:
+                    break
+
+                # Enforce a minimum 5-second gap between sends; the 1s sleep +
+                # refresh above already count toward this.
+                remaining = 5.0 - (asyncio.get_event_loop().time() - sent_at)
+                if remaining > 0:
+                    _LOGGER.debug(
+                        "Rate limiting device %s: waiting %.1fs before next command",
+                        self.device_serial, remaining,
+                    )
+                    await asyncio.sleep(remaining)
+
+                _LOGGER.debug(
+                    "Sending queued command for device %s: %s", self.device_serial, to_send
+                )
 
     def cache_command(self, command: str, value: Any) -> None:
         """Cache a command with its value and timestamp in the coordinator."""

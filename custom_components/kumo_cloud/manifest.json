@@ -1,12 +1,12 @@
 {
     "domain": "kumo_cloud",
     "name": "Mitsubishi Comfort",
-    "codeowners": ["@jjustinwilson"],
+    "codeowners": ["@jjustinwilson", "@smack000"],
     "config_flow": true,
-    "documentation": "https://github.com/jjustinwilson/comfort_HA/",
-    "issue_tracker": "https://github.com/jjustinwilson/comfort_HA/issues",
+    "documentation": "https://github.com/smack000/comfort_HA/",
+    "issue_tracker": "https://github.com/smack000/comfort_HA/issues",
     "iot_class": "cloud_polling",
     "loggers": ["kumo_cloud"],
     "requirements": ["aiohttp>=3.8.0"],
-    "version": "1.0.0"
+    "version": "1.2.0"
   }

@@ -44,6 +44,18 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _round_temp_for_kumo(temp: float) -> float:
+    """Round a temperature to the nearest 0.5°C boundary.
+
+    Kumo Cloud stores and accepts all setpoints at 0.5°C precision; values that
+    don't land on a 0.5°C boundary get silently rounded by the cloud API.  We
+    round explicitly on the way out so that the value we cache locally always
+    matches what the cloud will actually store.
+    """
+    return round(temp * 2) / 2
+
+
 # Mapping from Kumo Cloud operation modes to Home Assistant HVAC modes
 KUMO_TO_HVAC_MODE = {
     OPERATION_MODE_OFF: HVACMode.OFF,
@@ -390,8 +402,17 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
 
     @property
     def target_temperature_step(self) -> float:
-        """Return the supported step of target temperature."""
-        return 0.5  # Kumo Cloud typically supports 0.5 degree steps
+        """Return the supported step of target temperature.
+
+        The cloud API stores setpoints in Celsius at 0.5°C precision, so the
+        Celsius step is 0.5.  When the UI is in Fahrenheit the step must be 1°F
+        because 0.5°C ≈ 0.9°F — there is no Fahrenheit increment that maps
+        cleanly to a sub-integer Celsius value, so integer degrees are the
+        minimum meaningful precision in Fahrenheit.
+        """
+        if self.hass.config.units.temperature_unit == UnitOfTemperature.FAHRENHEIT:
+            return 1.0
+        return 0.5
 
     @property
     def available(self) -> bool:
@@ -464,7 +485,7 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
             target_temp_low = kwargs.get(ATTR_TARGET_TEMP_LOW)
             
             if target_temp_high is not None:
-                commands["spCool"] = target_temp_high
+                commands["spCool"] = _round_temp_for_kumo(target_temp_high)
             else:
                 # Maintain existing high setpoint
                 sp_cool = device_data.get("spCool", adapter.get("spCool"))
@@ -472,7 +493,7 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
                     commands["spCool"] = sp_cool
                     
             if target_temp_low is not None:
-                commands["spHeat"] = target_temp_low
+                commands["spHeat"] = _round_temp_for_kumo(target_temp_low)
             else:
                 # Maintain existing low setpoint
                 sp_heat = device_data.get("spHeat", adapter.get("spHeat"))
@@ -485,13 +506,13 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
                 return
 
             if hvac_mode == HVACMode.COOL:
-                commands["spCool"] = target_temp
+                commands["spCool"] = _round_temp_for_kumo(target_temp)
                 # Maintain heat setpoint
                 sp_heat = device_data.get("spHeat", adapter.get("spHeat"))
                 if sp_heat is not None:
                     commands["spHeat"] = sp_heat
             elif hvac_mode == HVACMode.HEAT:
-                commands["spHeat"] = target_temp
+                commands["spHeat"] = _round_temp_for_kumo(target_temp)
                 # Maintain cool setpoint
                 sp_cool = device_data.get("spCool", adapter.get("spCool"))
                 if sp_cool is not None:
