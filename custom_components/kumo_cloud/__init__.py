@@ -9,10 +9,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 
 from .api import KumoCloudAPI, KumoCloudAuthError, KumoCloudConnectionError
-from .coordinator import KumoCloudDataUpdateCoordinator
+from .coordinator import KumoCloudDataUpdateCoordinator, _VersionedLogger
 from .const import CONF_SITE_ID, DOMAIN, LOG_VERSION
 
-_LOGGER = logging.getLogger(__name__)
+_LOGGER = _VersionedLogger(logging.getLogger(__name__))
 
 PLATFORMS: list[Platform] = [Platform.CLIMATE, Platform.SENSOR]
 
