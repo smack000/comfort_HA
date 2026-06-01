@@ -8,7 +8,7 @@ CONF_SITE_ID = "site_id"
 # API constants
 API_BASE_URL = "https://app-prod.kumocloud.com"
 API_VERSION = "v3"
-API_APP_VERSION = "3.0.9"
+API_APP_VERSION = "3.2.4"
 
 # Token refresh constants
 TOKEN_REFRESH_INTERVAL = 1200  # 20 minutes in seconds
