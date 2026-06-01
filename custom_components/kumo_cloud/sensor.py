@@ -43,10 +43,10 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .coordinator import KumoCloudDataUpdateCoordinator, KumoCloudDevice
+from .coordinator import KumoCloudDataUpdateCoordinator, KumoCloudDevice, _VersionedLogger
 from .const import DOMAIN
 
-_LOGGER = logging.getLogger(__name__)
+_LOGGER = _VersionedLogger(logging.getLogger(__name__))
 
 async def async_setup_entry(
     hass: HomeAssistant,
