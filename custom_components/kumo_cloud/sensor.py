@@ -46,7 +46,19 @@ class KumoCloudTemperatureSensor(SensorEntity):
         self.device = device
         self._attr_name = f"{device.zone_data.get('name', 'Kumo Cloud')} Temperature"
         self._attr_unique_id = f"{device.device_serial}_temperature"
-        self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS  # Use native unit
+        # NOTE: native_unit_of_measurement = CELSIUS means HA uses standard math
+        # (temp * 9/5 + 32) when displaying in Fahrenheit. This diverges from
+        # Mitsubishi's proprietary F<->C lookup tables used by the climate entity
+        # (see _c_to_f / _C_TO_F in climate.py). At certain values the two
+        # entities will show different readings for the same underlying roomTemp:
+        #   19.0 °C → sensor 66 °F (std) vs climate 67 °F (table)
+        #   21.0 °C → sensor 70 °F (std) vs climate 69 °F (table)
+        #   22.0 °C → sensor 72 °F (std) vs climate 71 °F (table)
+        # Fixing this requires dropping native_unit_of_measurement and managing
+        # the unit dynamically (matching hass.config.units.temperature_unit), which
+        # also means sharing the lookup tables with this module — consider extracting
+        # them to a shared temp_util.py. Deferred: impact is cosmetic/display-only.
+        self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
         self._attr_device_class = "temperature"  # Explicitly define as a temperature sensor
         self._attr_state_class = SensorStateClass.MEASUREMENT
 
