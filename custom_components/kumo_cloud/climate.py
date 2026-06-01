@@ -540,8 +540,18 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
 
     @property
     def available(self) -> bool:
-        """Return True if entity is available."""
-        return self.device.available and self.coordinator.last_update_success
+        """Return True if entity is available.
+
+        Keep entity available when we have data even if the last poll failed.
+        This prevents automations from triggering spuriously when the entity
+        flickers between available/unavailable due to transient API errors.
+        """
+        has_data = (
+            self.device.zone_data
+            and self.device.device_data
+            and self.coordinator.data is not None
+        )
+        return bool(has_data) and self.device.available
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
