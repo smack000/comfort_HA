@@ -35,6 +35,9 @@ class KumoCloudDataUpdateCoordinator(DataUpdateCoordinator):
         self.zones: list[dict[str, Any]] = []
         self.devices: dict[str, dict[str, Any]] = {}
         self.device_profiles: dict[str, list[dict[str, Any]]] = {}
+        self.wireless_sensors: dict[str, dict[str, Any]] = {}
+        self.device_statuses: dict[str, dict[str, Any]] = {}
+        self.zone_notifications: dict[str, dict[str, Any]] = {}
 
         # Instance variable to store cached commands
         self.cached_commands: dict[tuple[str, str], tuple[str, Any]] = {}
@@ -57,24 +60,56 @@ class KumoCloudDataUpdateCoordinator(DataUpdateCoordinator):
             # Get device details for each zone
             devices = {}
             device_profiles = {}
+            wireless_sensors = {}
+            device_statuses = {}
+            zone_notifications = {}
 
             for zone in zones:
                 if "adapter" in zone and zone["adapter"]:
                     device_serial = zone["adapter"]["deviceSerial"]
+                    zone_id = zone["id"]
+                    has_sensor = zone["adapter"].get("hasSensor", False)
 
-                    # Get device details and profile in parallel
-                    device_detail_task = self.api.get_device_details(device_serial)
-                    device_profile_task = self.api.get_device_profile(device_serial)
+                    # Build task list — fetch device data, profile, status, and
+                    # notification preferences in parallel; add wireless sensor
+                    # only for zones that have one (hasSensor flag).
+                    task_keys = ["detail", "profile", "status", "notifications"]
+                    tasks = [
+                        self.api.get_device_details(device_serial),
+                        self.api.get_device_profile(device_serial),
+                        self.api.get_device_status(device_serial),
+                        self.api.get_zone_notification_preferences(zone_id),
+                    ]
+                    if has_sensor:
+                        task_keys.append("sensor")
+                        tasks.append(self.api.get_wireless_sensor(device_serial))
 
-                    device_detail, device_profile = await asyncio.gather(
-                        device_detail_task, device_profile_task
-                    )
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                    result_map: dict[str, Any] = {}
+                    for key, result in zip(task_keys, results):
+                        if isinstance(result, Exception):
+                            _LOGGER.debug("Failed to fetch %s for %s: %s", key, device_serial, result)
+                            result_map[key] = None
+                        else:
+                            result_map[key] = result
+
+                    device_detail = result_map.get("detail") or {}
 
                     # Process pending commands for the device
                     self._process_pending_commands(device_serial, device_detail)
 
                     devices[device_serial] = device_detail
-                    device_profiles[device_serial] = device_profile
+                    device_profiles[device_serial] = result_map.get("profile") or []
+
+                    if result_map.get("status"):
+                        device_statuses[device_serial] = result_map["status"]
+
+                    if result_map.get("notifications"):
+                        zone_notifications[zone_id] = result_map["notifications"]
+
+                    if has_sensor and result_map.get("sensor"):
+                        wireless_sensors[device_serial] = result_map["sensor"]
 
                     _LOGGER.debug(
                         "Device details fetched for %s: roomTemp=%s, spHeat=%s, spCool=%s, "
@@ -94,11 +129,17 @@ class KumoCloudDataUpdateCoordinator(DataUpdateCoordinator):
             self.zones = zones
             self.devices = devices
             self.device_profiles = device_profiles
+            self.wireless_sensors = wireless_sensors
+            self.device_statuses = device_statuses
+            self.zone_notifications = zone_notifications
 
             return {
                 "zones": zones,
                 "devices": devices,
                 "device_profiles": device_profiles,
+                "wireless_sensors": wireless_sensors,
+                "device_statuses": device_statuses,
+                "zone_notifications": zone_notifications,
             }
 
         except KumoCloudAuthError as err:
@@ -180,6 +221,9 @@ class KumoCloudDataUpdateCoordinator(DataUpdateCoordinator):
                 "zones": self.zones,
                 "devices": self.devices,
                 "device_profiles": self.device_profiles,
+                "wireless_sensors": self.wireless_sensors,
+                "device_statuses": self.device_statuses,
+                "zone_notifications": self.zone_notifications,
             }
 
             # Notify all listeners that data has been updated
@@ -292,6 +336,21 @@ class KumoCloudDevice:
     def name(self) -> str:
         """Return the name of the device."""
         return self.zone_data.get("name", f"Zone {self.zone_id}")
+
+    @property
+    def wireless_sensor_data(self) -> dict[str, Any] | None:
+        """Get wireless sensor data (battery, rssi, temperature, humidity)."""
+        return self.coordinator.wireless_sensors.get(self.device_serial)
+
+    @property
+    def device_status_data(self) -> dict[str, Any] | None:
+        """Get device status data (firmware version, WiFi signal, router info)."""
+        return self.coordinator.device_statuses.get(self.device_serial)
+
+    @property
+    def zone_notification_data(self) -> dict[str, Any] | None:
+        """Get zone notification preferences (filter reminders)."""
+        return self.coordinator.zone_notifications.get(self.zone_id)
 
     @property
     def unique_id(self) -> str:

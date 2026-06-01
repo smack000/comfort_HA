@@ -220,6 +220,45 @@ class KumoCloudAPI:
         """Get device profile information."""
         return await self._request("GET", f"/devices/{device_serial}/profile")
 
+    async def get_wireless_sensor(self, device_serial: str) -> dict[str, Any] | None:
+        """Get wireless sensor data (battery, temperature, humidity, rssi).
+
+        Returns None if the device has no wireless sensor attached.
+        Endpoint: GET /v3/devices/{deviceSerial}/sensor
+        """
+        try:
+            return await self._request("GET", f"/devices/{device_serial}/sensor")
+        except KumoCloudConnectionError as err:
+            if "404" in str(err):
+                return None
+            raise
+
+    async def get_device_status(self, device_serial: str) -> dict[str, Any] | None:
+        """Get device status (firmware version, WiFi signal, router info).
+
+        Endpoint: GET /v3/devices/{deviceSerial}/status
+        Returns: firmwareVersion, routerSsid, routerRssi, autoModeDisable, etc.
+        """
+        try:
+            return await self._request("GET", f"/devices/{device_serial}/status")
+        except KumoCloudConnectionError as err:
+            if "404" in str(err):
+                return None
+            raise
+
+    async def get_zone_notification_preferences(self, zone_id: str) -> dict[str, Any] | None:
+        """Get zone notification preferences (filter reminders, alert settings).
+
+        Endpoint: GET /v3/zones/{zoneId}/notification-preferences
+        Returns: filterDirtyReminderInterval, filterDirtyReminderLastSent, etc.
+        """
+        try:
+            return await self._request("GET", f"/zones/{zone_id}/notification-preferences")
+        except KumoCloudConnectionError as err:
+            if "404" in str(err):
+                return None
+            raise
+
     async def send_command(
         self, device_serial: str, commands: dict[str, Any]
     ) -> dict[str, Any]:
