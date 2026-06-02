@@ -237,7 +237,8 @@ class KumoCloudAPI:
         """Get device status (firmware version, WiFi signal, router info).
 
         Endpoint: GET /v3/devices/{deviceSerial}/status
-        Returns: firmwareVersion, routerSsid, routerRssi, autoModeDisable, etc.
+        Returns: firmwareVersion, routerSsid, routerRssi, autoModeDisable,
+                 roomTempDisplayOffset, modeHeat, modeDry, cryptoSerial, etc.
         """
         try:
             return await self._request("GET", f"/devices/{device_serial}/status")
@@ -250,7 +251,8 @@ class KumoCloudAPI:
         """Get zone notification preferences (filter reminders, alert settings).
 
         Endpoint: GET /v3/zones/{zoneId}/notification-preferences
-        Returns: filterDirtyReminderInterval, filterDirtyReminderLastSent, etc.
+        Returns: filterDirtyReminderInterval, filterDirtyReminderLastSent,
+                 sensorLowBattery, sensorSignalLost, lowTemp, highTemp, etc.
         """
         try:
             return await self._request("GET", f"/zones/{zone_id}/notification-preferences")

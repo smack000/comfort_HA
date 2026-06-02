@@ -29,13 +29,13 @@ OPERATION_MODE_AUTO = "auto"
 OPERATION_MODE_AUTO_COOL = "autoCool"
 OPERATION_MODE_AUTO_HEAT = "autoHeat"
 
-# Fan speeds
+# Fan speeds (raw API values -- see climate.py for UI label mapping)
 FAN_SPEED_AUTO = "auto"
 FAN_SPEED_LOW = "low"
 FAN_SPEED_MEDIUM = "medium"
 FAN_SPEED_HIGH = "high"
 
-# Air direction
+# Air direction (raw API values -- see climate.py for UI label mapping)
 AIR_DIRECTION_HORIZONTAL = "horizontal"
 AIR_DIRECTION_VERTICAL = "vertical"
 AIR_DIRECTION_SWING = "swing"

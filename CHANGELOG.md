@@ -1,59 +1,42 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [1.2.0] - 2026-04-22
+## [1.3.0] - 2026-06-02
 
 ### Added
-- Sensor platform: dedicated temperature and humidity sensor entities per device
-- Humidity attribute exposed on the climate entity
-- Dual-setpoint support for heat/cool mode (`target_temperature_high` / `target_temperature_low` and `TARGET_TEMPERATURE_RANGE` feature flag)
-- Versioned log prefix (`[vN]`) on all coordinator log messages to confirm new builds are active after a restart
-- Startup info log recording `log_version` and `site_id` at integration load time
+- Versioned log output: all log messages prefixed with `[vN]` via `_VersionedLogger` adapter for easy correlation across HA log files
 
 ### Changed
-- Coordinator extracted to its own `coordinator.py` module (was previously in `__init__.py`)
-- API timeout raised from 10 s to 30 s
-- API retry logic: exponential-backoff retries (up to 3×, base delay 60 s) on HTTP 429 rate-limit responses and timeout errors
-- Optimistic command cache: sent commands are cached and re-applied over polled device data so the UI reflects changes immediately rather than reverting to stale cloud values
-- Cache eviction changed from `updatedAt`-comparison to a 60-second TTL — more reliable when the cloud is slow to propagate updates
-- `send_command` now uses a per-device `asyncio.Lock`, ensuring only one API call is in-flight per device at a time; commands that arrive while one is in-flight are held in a last-write-wins pending slot
-- Minimum 5-second gap enforced between consecutive sends to the same device
-- All setpoints rounded to the nearest 0.5 °C boundary before sending, matching Kumo Cloud's internal precision
-- `target_temperature_step` returns `1.0` when the HA UI is set to Fahrenheit (was always `0.5`)
-- `hvac_action` logic refined for `autoCool` / `autoHeat` modes with per-mode threshold checks against the correct setpoint
-- `async_set_temperature` correctly handles independent high/low setpoints in `HEAT_COOL` mode instead of applying a fixed 2-degree hysteresis
-- `HVAC_TO_KUMO_MODE` reverse mapping made explicit to avoid collision with `autoCool` / `autoHeat`
+- Command cache eviction replaced with a 60-second TTL (previously compared against server `updatedAt` timestamp, which could lag or be absent)
+- `_send_lock` + 5-second minimum gap between consecutive commands to the same device — prevents duplicate or out-of-order commands from rapid UI changes
+- `available()` now checks for cached zone/device data in memory rather than gating on `last_update_success`, keeping entities available through transient API poll failures
+- `temperature_unit` reads from `hass.config.units.temperature_unit` at runtime (previously computed once at setup)
+- HVAC action dead-band is unit-aware: 1.0 °F in Fahrenheit mode, 0.5 °C in Celsius mode
+
+## [1.1.0] - 2026-03-09
+
+### Added
+- Mitsubishi proprietary F/C temperature lookup tables (ekiczek PR #23, PR #199)
+- Fan speed mapping: API values now correctly translate to Comfort app labels
+- Vane position mapping: API values now correctly translate to Comfort app labels
+- Command caching with `updatedAt` comparison to prevent state bounce (smack000)
+- Standalone temperature and humidity sensor entities per zone (smack000)
+- Wireless sensor support: battery level, signal strength (RSSI), temperature, and humidity
+  from PAC-USWHS003-TH-1 sensors via /v3/devices/{serial}/sensor endpoint
+- Diagnostic sensors: WiFi adapter firmware version and signal strength via /v3/devices/{serial}/status
+- Filter maintenance tracking via /v3/zones/{id}/notification-preferences
+- Updated API app version from 3.0.9 to 3.2.4 to match current Comfort app
+- Auto heat/cool mode with dual setpoint support (smack000 / tw3rp)
+- Refactored architecture: API client and coordinator in separate modules (smack000)
+- API retry logic with exponential backoff for 429 rate limits (smack000 / tw3rp)
+- Improved entity availability: prevents false automation triggers during transient API errors (tw3rp)
+- Debug logging for fan speed and vane position translations
 
 ### Fixed
-- Syntax error in `async_turn_off` (stray quote character)
-- Circular import between `__init__.py` and `climate.py`
+- Temperature setpoints now match the Comfort app exactly (no more ~1 F drift)
+- Fan speed display matches Comfort app labels (was showing raw API values)
+- Vane position display matches Comfort app labels (was showing raw API values)
+- State bouncing after sending commands (cached commands maintained until server confirms)
+- Sensor entities now inherit from CoordinatorEntity for automatic updates
 
-## [1.1.0] - 2024-01-02
-
-### Added
-- Support for units that report `autoHeat` or `autoCool` operation modes
-- HVACMode.HEAT_COOL now activates when these modes are reported
-
-## [1.0.0] - 2024-01-01
-
-### Added
-- Initial release of Mitsubishi Comfort integration
-- Climate control support for Mitsubishi Electric systems via Kumo Cloud API
-- Config flow for easy setup
-- Multi-zone support
-- Automatic token refresh
-- Device capability detection
-- Support for temperature, HVAC modes, fan speeds, and air direction
-- Real-time temperature and humidity monitoring
-
-### Features
-- Climate entity with full Home Assistant integration
-- Automatic discovery of zones within selected site
-- Configurable update intervals
-- Error handling and retry logic
-- Support for multiple HVAC modes (heat, cool, dry, fan, auto)
-- Device-specific feature detection 
+## [0.1.1-alpha.1] - Previous upstream release
+- Initial Kumo Cloud V3 API integration by jjustinwilson

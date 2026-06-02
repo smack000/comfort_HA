@@ -1,6 +1,9 @@
 """Platform for Kumo Cloud climate integration.
 
-Fan/vane UI mapping: Correct Comfort app labels for fan speeds and vane positions.
+Merged from multiple forks:
+- ekiczek: Mitsubishi proprietary F/C temperature lookup tables (PR #23, PR #199)
+- tw3rp: Improved entity availability
+- Fan/vane UI mapping: Correct Comfort app labels for fan speeds and vane positions
 """
 
 from __future__ import annotations
@@ -251,7 +254,6 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
             # Check for vane/swing support
             if profile_data.get("hasVaneSwing", False):
                 features |= ClimateEntityFeature.SWING_MODE
-
             if profile_data.get("hasVaneDir", False):
                 features |= ClimateEntityFeature.SWING_MODE
 
@@ -260,6 +262,8 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
                 features |= ClimateEntityFeature.TARGET_TEMPERATURE_RANGE
 
         self._attr_supported_features = features
+
+    # ---- Device info --------------------------------------------------------
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -277,6 +281,8 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
             sw_version=device_data.get("model", {}).get("serialProfile"),
             serial_number=device_data.get("serialNumber"),
         )
+
+    # ---- Temperature properties ---------------------------------------------
 
     @property
     def temperature_unit(self) -> str:
@@ -308,18 +314,17 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
 
     @property
     def target_temperature(self) -> float | None:
-        """Return the target temperature."""
+        """Return the target temperature for single-setpoint modes."""
         adapter = self.device.zone_data.get("adapter", {})
         hvac_mode = self.hvac_mode
 
         if hvac_mode == HVACMode.COOL:
-            val = adapter.get("spCool")
+            return self._kumo_to_ha(adapter.get("spCool"))
         elif hvac_mode == HVACMode.HEAT:
-            val = adapter.get("spHeat")
-        else:
-            return None
+            return self._kumo_to_ha(adapter.get("spHeat"))
 
-        return self._kumo_to_ha(val)
+        # HEAT_COOL uses target_temperature_high/low instead
+        return None
 
     @property
     def target_temperature_high(self) -> float | None:
@@ -328,8 +333,7 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
             adapter = self.device.zone_data.get("adapter", {})
             device_data = self.device.device_data
             # Use device data if available (more current), otherwise use adapter data
-            val = device_data.get("spCool", adapter.get("spCool"))
-            return self._kumo_to_ha(val)
+            return self._kumo_to_ha(device_data.get("spCool", adapter.get("spCool")))
         return None
 
     @property
@@ -339,9 +343,54 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
             adapter = self.device.zone_data.get("adapter", {})
             device_data = self.device.device_data
             # Use device data if available (more current), otherwise use adapter data
-            val = device_data.get("spHeat", adapter.get("spHeat"))
-            return self._kumo_to_ha(val)
+            return self._kumo_to_ha(device_data.get("spHeat", adapter.get("spHeat")))
         return None
+
+    @property
+    def min_temp(self) -> float:
+        """Return minimum temperature."""
+        profile = self.device.profile_data
+        if profile:
+            profile_data = profile[0] if isinstance(profile, list) else profile
+            min_setpoints = profile_data.get("minimumSetPoints", {})
+            min_c = min(min_setpoints.get("heat", 16), min_setpoints.get("cool", 16))
+        else:
+            min_c = 16.0
+			
+        if self.temperature_unit == UnitOfTemperature.FAHRENHEIT:
+            return _c_to_f(min_c)
+					
+        return min_c
+
+    @property
+    def max_temp(self) -> float:
+        """Return maximum temperature."""
+        profile = self.device.profile_data
+        if profile:
+            profile_data = profile[0] if isinstance(profile, list) else profile
+            max_setpoints = profile_data.get("maximumSetPoints", {})
+            max_c = max(max_setpoints.get("heat", 30), max_setpoints.get("cool", 30))
+        else:
+            max_c = 30.0
+
+        if self.temperature_unit == UnitOfTemperature.FAHRENHEIT:
+            return _c_to_f(max_c)
+					
+        return max_c
+
+    @property
+    def target_temperature_step(self) -> float:
+        """Return the supported step of target temperature.
+
+        The cloud API stores setpoints in Celsius at 0.5°C precision, so the
+        Celsius step is 0.5.  When the UI is in Fahrenheit the step must be 1°F
+        because 0.5°C ≈ 0.9°F — there is no Fahrenheit increment that maps
+        cleanly to a sub-integer Celsius value, so integer degrees are the
+        minimum meaningful precision in Fahrenheit.
+        """
+        if self.temperature_unit == UnitOfTemperature.FAHRENHEIT:
+            return 1.0
+        return 0.5
 
     @property
     def hvac_mode(self) -> HVACMode:
@@ -384,6 +433,8 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
                 modes.append(HVACMode.FAN_ONLY)
             if profile_data.get("hasModeAuto", False) or "auto" in max_setpoints:
                 modes.append(HVACMode.HEAT_COOL)
+        else:
+            modes.extend([HVACMode.HEAT, HVACMode.COOL])
 
         return modes
 
@@ -395,16 +446,16 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
             return HVACAction.OFF
 
         # Check both adapter (zone) and device data for most current status
-        adapter = self.device.zone_data.get("adapter", {})
         device_data = self.device.device_data
+        adapter = self.device.zone_data.get("adapter", {})
 
         # Use device data if available (more current), otherwise use adapter data
-        power = device_data.get("power", adapter.get("power", 0))
         operation_mode = device_data.get(
             "operationMode", adapter.get("operationMode", OPERATION_MODE_OFF)
         )
+        power = device_data.get("power", adapter.get("power", 0))
 
-        if power == 0:
+        if operation_mode == OPERATION_MODE_OFF or power == 0:
             return HVACAction.OFF
 
         # If device is on and has a valid operation mode, show it as active
@@ -496,47 +547,21 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
 
         return UI_VANE_ORDER.copy()
 
-    @property
-    def min_temp(self) -> float:
-        """Return minimum temperature."""
-        profile = self.device.profile_data
-        if profile:
-            profile_data = profile[0] if isinstance(profile, list) else profile
-            min_setpoints = profile_data.get("minimumSetPoints", {})
-            min_c = min(min_setpoints.get("heat", 16), min_setpoints.get("cool", 16))
-        else:
-            min_c = 16.0
-        if self.temperature_unit == UnitOfTemperature.FAHRENHEIT:
-            return self._kumo_to_ha(min_c) or 61.0
-        return min_c
+    # ---- Misc properties ----------------------------------------------------
 
     @property
-    def max_temp(self) -> float:
-        """Return maximum temperature."""
-        profile = self.device.profile_data
-        if profile:
-            profile_data = profile[0] if isinstance(profile, list) else profile
-            max_setpoints = profile_data.get("maximumSetPoints", {})
-            max_c = max(max_setpoints.get("heat", 30), max_setpoints.get("cool", 30))
-        else:
-            max_c = 30.0
-        if self.temperature_unit == UnitOfTemperature.FAHRENHEIT:
-            return self._kumo_to_ha(max_c) or 86.0
-        return max_c
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the optional state attributes."""
+        attributes = super().extra_state_attributes or {}
 
-    @property
-    def target_temperature_step(self) -> float:
-        """Return the supported step of target temperature.
+        # Add humidity to the attributes
+        adapter = self.device.zone_data.get("adapter", {})
+        device_data = self.device.device_data
+        humidity = device_data.get("humidity", adapter.get("humidity"))
+        if humidity is not None:
+            attributes["humidity"] = humidity
 
-        The cloud API stores setpoints in Celsius at 0.5°C precision, so the
-        Celsius step is 0.5.  When the UI is in Fahrenheit the step must be 1°F
-        because 0.5°C ≈ 0.9°F — there is no Fahrenheit increment that maps
-        cleanly to a sub-integer Celsius value, so integer degrees are the
-        minimum meaningful precision in Fahrenheit.
-        """
-        if self.temperature_unit == UnitOfTemperature.FAHRENHEIT:
-            return 1.0
-        return 0.5
+        return attributes
 
     @property
     def available(self) -> bool:
@@ -552,20 +577,6 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
             and self.coordinator.data is not None
         )
         return bool(has_data) and self.device.available
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Return the optional state attributes."""
-        attributes = super().extra_state_attributes or {}
-
-        # Add humidity to the attributes
-        adapter = self.device.zone_data.get("adapter", {})
-        device_data = self.device.device_data
-        humidity = device_data.get("humidity", adapter.get("humidity"))
-        if humidity is not None:
-            attributes["humidity"] = humidity
-
-        return attributes
 
     async def _send_command_and_refresh(self, commands: dict[str, Any]) -> None:
         """Send command and ensure fresh status update."""

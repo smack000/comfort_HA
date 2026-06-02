@@ -80,6 +80,7 @@ class KumoCloudDataUpdateCoordinator(DataUpdateCoordinator):
                         self.api.get_device_status(device_serial),
                         self.api.get_zone_notification_preferences(zone_id),
                     ]
+                    # Also fetch wireless sensor data if the zone has one
                     if has_sensor:
                         task_keys.append("sensor")
                         tasks.append(self.api.get_wireless_sensor(device_serial))
@@ -321,6 +322,28 @@ class KumoCloudDevice:
         return self.coordinator.device_profiles.get(self.device_serial, [])
 
     @property
+    def has_wireless_sensor(self) -> bool:
+        """Return True if this device has a wireless sensor attached."""
+        zone = self.zone_data
+        adapter = zone.get("adapter", {})
+        return adapter.get("hasSensor", False)
+
+    @property
+    def wireless_sensor_data(self) -> dict[str, Any] | None:
+        """Get the wireless sensor data (battery, temp, humidity, rssi)."""
+        return self.coordinator.wireless_sensors.get(self.device_serial)
+
+    @property
+    def device_status_data(self) -> dict[str, Any] | None:
+        """Get device status data (firmware, WiFi signal, router info)."""
+        return self.coordinator.device_statuses.get(self.device_serial)
+
+    @property
+    def zone_notification_data(self) -> dict[str, Any] | None:
+        """Get zone notification preferences (filter reminders, alert settings)."""
+        return self.coordinator.zone_notifications.get(self.zone_id)
+
+    @property
     def available(self) -> bool:
         """Return True if device is available."""
         adapter = self.zone_data.get("adapter", {})
@@ -336,21 +359,6 @@ class KumoCloudDevice:
     def name(self) -> str:
         """Return the name of the device."""
         return self.zone_data.get("name", f"Zone {self.zone_id}")
-
-    @property
-    def wireless_sensor_data(self) -> dict[str, Any] | None:
-        """Get wireless sensor data (battery, rssi, temperature, humidity)."""
-        return self.coordinator.wireless_sensors.get(self.device_serial)
-
-    @property
-    def device_status_data(self) -> dict[str, Any] | None:
-        """Get device status data (firmware version, WiFi signal, router info)."""
-        return self.coordinator.device_statuses.get(self.device_serial)
-
-    @property
-    def zone_notification_data(self) -> dict[str, Any] | None:
-        """Get zone notification preferences (filter reminders)."""
-        return self.coordinator.zone_notifications.get(self.zone_id)
 
     @property
     def unique_id(self) -> str:

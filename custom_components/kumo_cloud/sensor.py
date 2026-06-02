@@ -10,10 +10,10 @@ Provides standalone sensor entities for each Mitsubishi zone:
 For zones with a wireless sensor (PAC-USWHS003-TH-1) attached:
 - Wireless Sensor Battery (%)
 - Wireless Sensor Signal Strength (RSSI dBm)
-- Wireless Sensor Temperature
-- Wireless Sensor Humidity
+- Wireless Sensor Temperature (from the remote sensor itself)
+- Wireless Sensor Humidity (from the remote sensor itself)
 
-API endpoints:
+API endpoints discovered via Proxyman traffic capture of the Comfort app:
 - /v3/devices/{serial}/sensor  (wireless sensor data)
 - /v3/devices/{serial}/status  (firmware, WiFi signal, router info)
 - /v3/zones/{zoneId}/notification-preferences  (filter reminders)
@@ -65,11 +65,11 @@ async def async_setup_entry(
 
             device = KumoCloudDevice(coordinator, zone_id, device_serial)
 
-            # Indoor unit sensors (always present)
+            # Indoor unit sensors (always available)
             entities.append(KumoCloudTemperatureSensor(coordinator, device))
             entities.append(KumoCloudHumiditySensor(coordinator, device))
 
-            # Diagnostic sensors from /status and /notification-preferences
+            # Diagnostic sensors from /status endpoint (always available)
             entities.append(KumoCloudFirmwareSensor(coordinator, device))
             entities.append(KumoCloudWiFiSignalSensor(coordinator, device))
             entities.append(KumoCloudFilterReminderSensor(coordinator, device))
@@ -93,8 +93,12 @@ def _device_info(device: KumoCloudDevice) -> DeviceInfo:
     )
 
 
+# =============================================================================
+# Indoor unit sensors
+# =============================================================================
+
 class KumoCloudTemperatureSensor(CoordinatorEntity, SensorEntity):
-    """Representation of a Kumo Cloud temperature sensor."""
+    """Temperature from the indoor unit's built-in thermistor."""
 
     def __init__(self, coordinator: KumoCloudDataUpdateCoordinator, device: KumoCloudDevice) -> None:
         """Initialize the temperature sensor."""
@@ -131,7 +135,7 @@ class KumoCloudTemperatureSensor(CoordinatorEntity, SensorEntity):
 
 
 class KumoCloudHumiditySensor(CoordinatorEntity, SensorEntity):
-    """Representation of a Kumo Cloud humidity sensor."""
+    """Humidity from the indoor unit."""
 
     def __init__(self, coordinator: KumoCloudDataUpdateCoordinator, device: KumoCloudDevice) -> None:
         """Initialize the humidity sensor."""
@@ -205,6 +209,7 @@ class KumoCloudWiFiSignalSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        """Include router SSID as an attribute."""
         status = self.device.device_status_data
         if status and status.get("routerSsid"):
             return {"router_ssid": status["routerSsid"]}
@@ -242,6 +247,7 @@ class KumoCloudFilterReminderSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        """Include reminder interval as an attribute."""
         notifications = self.device.zone_notification_data
         if notifications:
             attrs: dict[str, Any] = {}
@@ -331,7 +337,9 @@ class KumoCloudWirelessTemperatureSensor(CoordinatorEntity, SensorEntity):
         if sensor_data is None:
             return None
         temp = sensor_data.get("temperature")
-        return round(temp, 1) if temp is not None else None
+        if temp is not None:
+            return round(temp, 1)
+        return None
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -356,7 +364,9 @@ class KumoCloudWirelessHumiditySensor(CoordinatorEntity, SensorEntity):
         if sensor_data is None:
             return None
         humidity = sensor_data.get("humidity")
-        return round(humidity, 1) if humidity is not None else None
+        if humidity is not None:
+            return round(humidity, 1)
+        return None
 
     @property
     def device_info(self) -> DeviceInfo:
