@@ -125,8 +125,7 @@ class KumoCloudTemperatureSensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self) -> float | None:
         """Return the current temperature."""
-        adapter = self.device.zone_data.get("adapter", {})
-        return adapter.get("roomTemp")
+        return self.device.device_data.get("roomTemp")
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -150,9 +149,7 @@ class KumoCloudHumiditySensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self) -> float | None:
         """Return the current humidity."""
-        adapter = self.device.zone_data.get("adapter", {})
-        device_data = self.device.device_data
-        return device_data.get("humidity", adapter.get("humidity"))
+        return self.device.device_data.get("humidity")
 
     @property
     def device_info(self) -> DeviceInfo:

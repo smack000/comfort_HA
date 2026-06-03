@@ -52,7 +52,44 @@ class KumoCloudDataUpdateCoordinator(DataUpdateCoordinator):
                 device_detail[command] = command_value
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data from Kumo Cloud."""
+        """Fetch data from Kumo Cloud.
+
+        Two API endpoints provide device state. Understanding which fields come
+        from each is important — they are NOT interchangeable:
+
+        GET /sites/{site_id}/zones  →  zone["adapter"]  (coordinator.zones)
+        ─────────────────────────────────────────────────────────────────────
+        Adapter-ONLY fields (not present in device detail):
+          hasSensor       — whether a wireless room sensor is paired
+          hasMhk2         — whether an MHK2 wall controller is paired
+
+        GET /devices/{serial}  →  coordinator.devices[serial]
+        ─────────────────────────────────────────────────────────────────────
+        Device-detail-ONLY fields (not present in adapter):
+          fanSpeed        — current fan speed (e.g. "auto", "quiet", "low"…)
+          airDirection    — current vane position (e.g. "horizontal", "auto"…)
+          rssi            — WiFi signal strength
+          serialNumber    — physical unit serial number
+          modelNumber     — model string (e.g. "PVA-A18AA7")
+          model           — nested object with brand, family, description, etc.
+          displayConfig   — filter/defrost/hotAdjust/standby flags
+          unusualFigures, twoFiguresCode, statusDisplay, runTest, etc.
+
+        Fields present in BOTH (device detail is authoritative):
+          roomTemp, spCool, spHeat, spAuto
+          humidity
+          power, operationMode, previousOperationMode
+          scheduleOwner, scheduleHoldEndTime
+          connected, isHeadless, isSimulator
+          lastStatusChangeAt, updatedAt, createdAt, timeZone
+
+        Freshness: device detail's `updatedAt` is consistently more recent than
+        adapter's `updatedAt` for the same device, confirming it reflects the
+        latest cloud state.  All climate/sensor state properties therefore read
+        exclusively from coordinator.devices[serial].  The adapter is used only
+        for zone-level metadata (hasSensor, connected as a fallback) and device
+        discovery (deviceSerial, zone name).
+        """
         try:
             # Get zones for the site
             zones = await self.api.get_zones(self.site_id)
@@ -95,7 +132,28 @@ class KumoCloudDataUpdateCoordinator(DataUpdateCoordinator):
                         else:
                             result_map[key] = result
 
-                    device_detail = result_map.get("detail") or {}
+                    device_detail = result_map.get("detail")
+                    if device_detail is None:
+                        # GET /devices/{serial} failed (network error, timeout, or non-2xx
+                        # response). Rather than overwriting self.devices[serial] with an
+                        # empty dict — which would make the entity go unavailable for one
+                        # full 60-second poll cycle — fall back to whatever we fetched
+                        # successfully last time. Pending commands are still applied below,
+                        # so any in-flight optimistic UI updates remain valid.
+                        # On the very first poll this will be {} (no previous data), which
+                        # correctly leaves the entity unavailable until a fetch succeeds.
+                        previous = self.devices.get(device_serial, {})
+                        device_detail = dict(previous)  # shallow copy; values are scalars
+                        if previous:
+                            _LOGGER.warning(
+                                "Device details fetch failed for %s; retaining previous data",
+                                device_serial,
+                            )
+                        else:
+                            _LOGGER.warning(
+                                "Device details fetch failed for %s; no previous data to fall back to",
+                                device_serial,
+                            )
 
                     # Process pending commands for the device
                     self._process_pending_commands(device_serial, device_detail)
@@ -198,25 +256,6 @@ class KumoCloudDataUpdateCoordinator(DataUpdateCoordinator):
             # Update the cached device data
             self.devices[device_serial] = device_detail
 
-            # Also update the zone data if it contains the same info
-            for zone in self.zones:
-                if "adapter" in zone and zone["adapter"]:
-                    if zone["adapter"]["deviceSerial"] == device_serial:
-                        # Update adapter data with fresh device data
-                        zone["adapter"].update(
-                            {
-                                "roomTemp": device_detail.get("roomTemp"),
-                                "operationMode": device_detail.get("operationMode"),
-                                "power": device_detail.get("power"),
-                                "fanSpeed": device_detail.get("fanSpeed"),
-                                "airDirection": device_detail.get("airDirection"),
-                                "spCool": device_detail.get("spCool"),
-                                "spHeat": device_detail.get("spHeat"),
-                                "humidity": device_detail.get("humidity"),
-                            }
-                        )
-                        break
-
             # Update the coordinator's data dict
             self.data = {
                 "zones": self.zones,
@@ -246,6 +285,10 @@ class KumoCloudDataUpdateCoordinator(DataUpdateCoordinator):
         asked for rather than snapping back to the stale cloud value.  Entries
         are evicted by cull_cached_commands() once they exceed the 60-second
         TTL, by which point the cloud should have caught up.
+
+        Also immediately writes the value into coordinator.devices[serial] so
+        that async_write_ha_state() called right after cache_commands() picks
+        up the user's intent without waiting for the next device refresh.
         """
         current_time = datetime.now(timezone.utc).isoformat()
         self.cached_commands[(device_serial, command)] = (current_time, value)
@@ -253,6 +296,10 @@ class KumoCloudDataUpdateCoordinator(DataUpdateCoordinator):
             "Cached command for device %s: %s=%s (cached_at=%s)",
             device_serial, command, value, current_time
         )
+        # Immediately apply to live device data so the first async_write_ha_state()
+        # after cache_commands() shows the user's new value rather than stale API data.
+        if device_serial in self.devices:
+            self.devices[device_serial][command] = value
 
     def cull_cached_commands(self, device_serial: str) -> None:
         """Remove cached commands for a device that have exceeded the 60-second TTL."""
@@ -404,13 +451,23 @@ class KumoCloudDevice:
                     # Wait a moment for the command to be processed
                     await asyncio.sleep(1)
 
-                    # Refresh this specific device's data immediately
-                    await self.coordinator.async_refresh_device(self.device_serial)
+                    # Only refresh when no newer command is already queued.
+                    # If a pending command exists, its cache entry already
+                    # reflects the user's latest intent; refreshing now would
+                    # briefly flash the stale intermediate value in the UI.
+                    if self._pending_commands is None:
+                        await self.coordinator.async_refresh_device(self.device_serial)
 
                 except Exception as err:
                     _LOGGER.error(
                         "Failed to send command to device %s: %s", self.device_serial, err
                     )
+                    # Best-effort refresh so the UI reverts to confirmed cloud
+                    # state rather than staying on an optimistic cached value.
+                    try:
+                        await self.coordinator.async_refresh_device(self.device_serial)
+                    except Exception:
+                        pass
                     raise
 
                 to_send = self._pending_commands
@@ -427,6 +484,19 @@ class KumoCloudDevice:
                         self.device_serial, remaining,
                     )
                     await asyncio.sleep(remaining)
+
+                # Absorb any commands that arrived DURING the rate-limit
+                # window (last-write-wins per key).  This prevents a stale
+                # intermediate value (e.g. 63°F) from being sent to the cloud
+                # after the user has already committed to a newer one (65°F).
+                if self._pending_commands is not None:
+                    to_send.update(self._pending_commands)
+                    self._pending_commands = None
+                    _LOGGER.debug(
+                        "Merged commands arriving during rate-limit window "
+                        "for device %s; will send: %s",
+                        self.device_serial, to_send,
+                    )
 
                 _LOGGER.debug(
                     "Sending queued command for device %s: %s", self.device_serial, to_send

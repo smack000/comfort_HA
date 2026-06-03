@@ -45,4 +45,4 @@ DEFAULT_SCAN_INTERVAL = 60
 
 # Monotonically increasing log version — bump this when deploying a new build
 # so log output identifies which code version is running
-LOG_VERSION = 3
+LOG_VERSION = 4

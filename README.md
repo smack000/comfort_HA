@@ -21,6 +21,9 @@ A `_send_lock` ensures only one command is in flight at a time, and a 5-second m
 ### Unit-aware HVAC action dead-band
 The dead-band used to determine whether the unit is actively heating or cooling is 1.0 °F when HA is configured in Fahrenheit and 0.5 °C in Celsius, matching the resolution of the Kumo Cloud API in each unit system.
 
+### Single source of truth for device state
+All state properties (temperature, setpoints, HVAC mode, fan speed, vane position) read exclusively from `GET /devices/{serial}` — the fresher, more complete API endpoint. Zone adapter data (`GET /zones`) is no longer used for state reads. Transient fetch failures preserve the last-known device state rather than blanking it out.
+
 ### Versioned log output
 All log messages are prefixed with `[vN]` (where N is `LOG_VERSION` in `const.py`) via a `_VersionedLogger` adapter. Makes it straightforward to correlate log entries from a specific deployment when troubleshooting across HA log files.
 
