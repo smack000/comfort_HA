@@ -9,7 +9,7 @@
 - All state reads (`current_temperature`, `target_temperature`, `hvac_mode`, `hvac_action`, `fan_mode`, `swing_mode`) now read exclusively from `device_data` (GET /devices/{serial}) — the fresher, more complete source
 - Adapter zone data is no longer written back during command dispatch or post-command refresh
 - Command cache eviction replaced with a 60-second TTL (previously compared against server `updatedAt` timestamp, would often lag)
-- `_send_lock` + 5-second minimum gap between consecutive commands to the same device — prevents duplicate or out-of-order commands from rapid UI changes
+- lock and 5-second minimum gap between consecutive commands to the same device — prevents duplicate or out-of-order commands from rapid UI changes
 - `available()` now checks for cached zone/device data in memory rather than gating on `last_update_success`, keeping entities available through transient API poll failures
 - `temperature_unit` reads from `hass.config.units.temperature_unit` at runtime (previously computed once at setup)
 - HVAC action dead-band is unit-aware: 1.0 °F in Fahrenheit mode, 0.5 °C in Celsius mode
