@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.1] - 2026-07-11
+
+### Fixed
+- `async_set_temperature` now honors an `hvac_mode` kwarg passed to `climate.set_temperature` (issue #1). The requested mode is folded into the same command batch as the setpoints, so a one-shot `set_temperature(hvac_mode=heat_cool, target_temp_low, target_temp_high)` on a unit currently in `cool`/`heat` correctly switches it to `heat_cool` and applies the range — previously the `hvac_mode` kwarg was ignored (the current mode was read from `self.hvac_mode`) and the call silently did nothing.
+- Supplying `target_temp_low`/`target_temp_high` in a single-setpoint mode now logs a warning instead of silently dropping the range.
+
 ## [1.3.0] - 2026-06-02
 
 ### Added

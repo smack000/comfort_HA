@@ -18,6 +18,7 @@ from homeassistant.components.climate import (
     HVACMode,
 )
 from homeassistant.components.climate.const import (
+    ATTR_HVAC_MODE,
     ATTR_TARGET_TEMP_HIGH,
     ATTR_TARGET_TEMP_LOW,
 )
@@ -602,14 +603,34 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
                 await self._send_command_and_refresh(commands)
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
-        """Set new target temperature."""
-        hvac_mode = self.hvac_mode
+        """Set new target temperature.
+
+        Honors an optional ``hvac_mode`` kwarg (per HA's climate.set_temperature
+        spec): when supplied, the mode switch is folded into the same command
+        batch as the setpoints so a caller can e.g. move a unit from ``cool`` to
+        ``heat_cool`` and set a 60/80 range in a single service call.
+        """
         commands = {}
 
         device_data = self.device.device_data
 
+        # If a mode was requested, queue the operationMode change and treat that
+        # mode as the effective mode for interpreting the setpoint kwargs below.
+        # cache_command() (invoked via _send_command_and_refresh) writes the
+        # value into live device_data, so we build one batch instead of making a
+        # second, rate-limited send.
+        requested_mode = kwargs.get(ATTR_HVAC_MODE)
+        if requested_mode is not None and requested_mode != self.hvac_mode:
+            if requested_mode == HVACMode.OFF:
+                commands["operationMode"] = OPERATION_MODE_OFF
+            else:
+                kumo_mode = HVAC_TO_KUMO_MODE.get(requested_mode)
+                if kumo_mode:
+                    commands["operationMode"] = kumo_mode
+        hvac_mode = requested_mode if requested_mode is not None else self.hvac_mode
+
         _LOGGER.debug(
-            "async_set_temperature for %s: kwargs=%s, hvac_mode=%s, device_data spHeat=%s spCool=%s",
+            "async_set_temperature for %s: kwargs=%s, effective hvac_mode=%s, device_data spHeat=%s spCool=%s",
             self.device.device_serial, kwargs, hvac_mode,
             device_data.get("spHeat"), device_data.get("spCool"),
         )
@@ -637,21 +658,43 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
         else:
             # Handle single setpoint modes
             target_temp = kwargs.get(ATTR_TEMPERATURE)
-            if target_temp is None:
-                return
 
-            if hvac_mode == HVACMode.COOL:
-                commands["spCool"] = self._ha_to_kumo(target_temp)
-                # Maintain heat setpoint
-                sp_heat = device_data.get("spHeat")
-                if sp_heat is not None:
-                    commands["spHeat"] = sp_heat
-            elif hvac_mode == HVACMode.HEAT:
-                commands["spHeat"] = self._ha_to_kumo(target_temp)
-                # Maintain cool setpoint
+            # Surface — rather than silently drop — a dual-setpoint range that
+            # was passed for a mode that can't use it (the original footgun).
+            if target_temp is None and (
+                kwargs.get(ATTR_TARGET_TEMP_LOW) is not None
+                or kwargs.get(ATTR_TARGET_TEMP_HIGH) is not None
+            ):
+                _LOGGER.warning(
+                    "set_temperature for %s supplied target_temp_low/high but the "
+                    "effective mode is %s (not heat_cool); range setpoints ignored. "
+                    "Pass hvac_mode: heat_cool to set a temperature range.",
+                    self.device.device_serial, hvac_mode,
+                )
+
+            if target_temp is not None:
+                if hvac_mode == HVACMode.COOL:
+                    commands["spCool"] = self._ha_to_kumo(target_temp)
+                    # Maintain heat setpoint
+                    sp_heat = device_data.get("spHeat")
+                    if sp_heat is not None:
+                        commands["spHeat"] = sp_heat
+                elif hvac_mode == HVACMode.HEAT:
+                    commands["spHeat"] = self._ha_to_kumo(target_temp)
+                    # Maintain cool setpoint
+                    sp_cool = device_data.get("spCool")
+                    if sp_cool is not None:
+                        commands["spCool"] = sp_cool
+            elif "operationMode" in commands:
+                # Bare mode switch (no temperature supplied): carry existing
+                # setpoints along so the cloud doesn't reset them, mirroring
+                # async_set_hvac_mode.
                 sp_cool = device_data.get("spCool")
+                sp_heat = device_data.get("spHeat")
                 if sp_cool is not None:
                     commands["spCool"] = sp_cool
+                if sp_heat is not None:
+                    commands["spHeat"] = sp_heat
 
         if commands:
             await self._send_command_and_refresh(commands)
